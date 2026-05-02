@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Allow ABS run logs as committed evidence (overrides *.log above)
+!g4-flashtree-formal-verification/abs_runs/*.log
+!**/tlc_runs/*.log
+!**/reports/lake_build.log

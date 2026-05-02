@@ -1,0 +1,5 @@
+Starting EML behavioral-model demo (one numeric pair)...
+EMLMinPlus Result: -0.406 | Cycles: 1
+Parity check: sm=-0.4054651081081643, eml=-0.406, |diff|=0.0005348918918357537
+StandardSoftmax Result: -0.4054651081081643 | Cycles: 24
+Behavioral-model demo complete. The assert constrains parity on ONE pair, not for all (p,q).

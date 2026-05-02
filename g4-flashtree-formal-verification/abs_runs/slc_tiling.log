@@ -1,0 +1,41 @@
+--- SLC Tiling Behavioral Model (LRU + pinned LUT) ---
+SLC Size:  96MB
+LUT Size:  16MB (pinned)
+Tile Size: 8MB (LRU)
+Tile budget: 80MB / 8MB = 10 tiles
+MISS: DeQuant_LUT (Loading 16MB)
+LOAD (pinned): DeQuant_LUT | occupancy 16MB / 96MB
+MISS: KV_Tile_0 (Loading 8MB)
+LOAD (LRU): KV_Tile_0 | occupancy 24MB / 96MB
+MISS: KV_Tile_1 (Loading 8MB)
+LOAD (LRU): KV_Tile_1 | occupancy 32MB / 96MB
+MISS: KV_Tile_2 (Loading 8MB)
+LOAD (LRU): KV_Tile_2 | occupancy 40MB / 96MB
+MISS: KV_Tile_3 (Loading 8MB)
+LOAD (LRU): KV_Tile_3 | occupancy 48MB / 96MB
+MISS: KV_Tile_4 (Loading 8MB)
+LOAD (LRU): KV_Tile_4 | occupancy 56MB / 96MB
+MISS: KV_Tile_5 (Loading 8MB)
+LOAD (LRU): KV_Tile_5 | occupancy 64MB / 96MB
+MISS: KV_Tile_6 (Loading 8MB)
+LOAD (LRU): KV_Tile_6 | occupancy 72MB / 96MB
+MISS: KV_Tile_7 (Loading 8MB)
+LOAD (LRU): KV_Tile_7 | occupancy 80MB / 96MB
+MISS: KV_Tile_8 (Loading 8MB)
+LOAD (LRU): KV_Tile_8 | occupancy 88MB / 96MB
+MISS: KV_Tile_9 (Loading 8MB)
+LOAD (LRU): KV_Tile_9 | occupancy 96MB / 96MB
+MISS: KV_Tile_10 (Loading 8MB)
+EVICT (LRU): KV_Tile_0 (8MB freed)
+LOAD (LRU): KV_Tile_10 | occupancy 96MB / 96MB
+MISS: KV_Tile_11 (Loading 8MB)
+EVICT (LRU): KV_Tile_1 (8MB freed)
+LOAD (LRU): KV_Tile_11 | occupancy 96MB / 96MB
+Re-accessing KV_Tile_0 (expected MISS, evicted earlier)...
+MISS: KV_Tile_0 (Loading 8MB)
+EVICT (LRU): KV_Tile_2 (8MB freed)
+LOAD (LRU): KV_Tile_0 | occupancy 96MB / 96MB
+Re-accessing KV_Tile_11 (expected HIT, was MRU)...
+HIT (LRU promoted): KV_Tile_11
+Final SLC Occupancy: 96MB / 96MB
+Behavioral-model demo complete. The asserts constrain 'occupancy <= 96' at every access, NOT residency in real hardware. See abs_remediation_notes.md.

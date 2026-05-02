@@ -1,0 +1,10 @@
+Starting DDTree Budget behavioral-model sweep...
+Argmax throughput on the analytic grid: B = 8
+Behavioral-model demo complete. The assert constrains the closed-form argmax, NOT a measured optimum.
+Budget: 1 | MAL: 1.0 | Latency: 10.5 | Throughput: 0.09523809523809523
+Budget: 32 | MAL: 4.465735902799727 | Latency: 26.0 | Throughput: 0.17175907318460487
+Budget: 8 | MAL: 3.0794415416798357 | Latency: 14.0 | Throughput: 0.21996011011998826
+Budget: 2 | MAL: 1.6931471805599454 | Latency: 11.0 | Throughput: 0.15392247095999503
+Budget: 4 | MAL: 2.386294361119891 | Latency: 12.0 | Throughput: 0.19885786342665757
+Budget: 64 | MAL: 5.1588830833596715 | Latency: 42.0 | Throughput: 0.1228305496038017
+Budget: 16 | MAL: 3.772588722239781 | Latency: 18.0 | Throughput: 0.2095882623466545
