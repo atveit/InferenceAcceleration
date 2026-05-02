@@ -1,0 +1,145 @@
+From 63cb29fc14369af42dd5e107bf8d7982739051e7 Mon Sep 17 00:00:00 2001
+From: Amund Tveit <atveit@gmail.com>
+Date: Sat, 2 May 2026 11:16:16 +0200
+Subject: [PATCH] fix(frontend/erlang): bundle absmodel .beam files in jar;
+ migrate dpor from `slave` to `peer`
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Three cumulative bugs caused absc built from `master` on macOS / Erlang
+OTP 28 to ship without the absmodel runtime support:
+
+1. macOS Gradle does not follow the rebar3-created `priv` symlink in
+   `_build/`, aborting downstream resource processing.
+2. rebar3 issue #379 — first invocation fetches deps and exits 1
+   *before* compiling absmodel itself; the existing
+   `ignoreExitValue = true` masked this so deps' .beam files (cowboy,
+   jsx) were bundled but absmodel's own (including dpor.beam) were not.
+3. dpor.erl uses the `slave` module which is deprecated and scheduled
+   for removal in OTP 31; on OTP 28 this emits a hard deprecation
+   warning during compile.
+
+Fixes in build.gradle:
+- New `fixErlangPrivSymlink` task: replaces the rebar3 symlink with a
+  real directory before downstream tasks read it.
+- Split rebar3 invocation into two passes: `fetchErlangDeps` ignores
+  exit (bug #379), then `compileErlangBackend` runs again and requires
+  exit 0 — guaranteeing absmodel actually compiles.
+- jar / shadowJar / processTestResources now `dependsOn
+  fixErlangPrivSymlink`, putting the .beam files into the jar.
+
+Fix in dpor.erl: migrate from `slave:start_link/3` to the supported
+`peer:start_link/1` map form, and use `peer:stop/1` to terminate.
+Behavior is unchanged; the deprecation warning is gone.
+
+Verified: `make clean && rm -rf frontend/build frontend/dist && make
+frontend` from a fresh tree produces a jar containing 26 absmodel
+.beam files (was 0). Three downstream behavioral models in
+g4-flashtree-formal-verification compile and run with assertions
+passing.
+---
+ frontend/build.gradle                         | 48 +++++++++++++++++--
+ .../resources/erlang/absmodel/src/dpor.erl    | 12 ++++-
+ 2 files changed, 53 insertions(+), 7 deletions(-)
+
+diff --git a/frontend/build.gradle b/frontend/build.gradle
+index e296226..5c122a3 100644
+--- a/frontend/build.gradle
++++ b/frontend/build.gradle
+@@ -157,13 +157,47 @@ task checkErlang() {
+     }
+ }
+ 
+-task compileErlangBackend(type: Exec, dependsOn: processResources) {
+-    description = 'Compiles Erlang backend support files.'
++// Workaround for https://github.com/abstools/abstools/issues/379: on a
++// fresh tree, rebar3's first run fetches deps and exits 1 *before*
++// compiling absmodel itself. The original task ran rebar3 once and set
++// `ignoreExitValue = true`, which hid the failure and produced jars with
++// no absmodel .beam files. Run rebar3 twice — the second pass compiles
++// absmodel and exits 0 — and only ignore the first run's exit code.
++task fetchErlangDeps(type: Exec, dependsOn: processResources) {
++    description = 'Fetches and compiles Erlang backend dependencies (rebar3 pass 1).'
+     workingDir = 'build/resources/main/erlang/absmodel'
+     commandLine 'escript', '../bin/rebar3', 'compile'
+     ignoreExitValue = true      // https://github.com/abstools/abstools/issues/379
+ }
+-compileErlangBackend.dependsOn 'checkErlang'
++fetchErlangDeps.dependsOn 'checkErlang'
++
++task compileErlangBackend(type: Exec, dependsOn: fetchErlangDeps) {
++    description = 'Compiles Erlang backend support files (rebar3 pass 2 — compiles absmodel).'
++    workingDir = 'build/resources/main/erlang/absmodel'
++    commandLine 'escript', '../bin/rebar3', 'compile'
++}
++
++// rebar3 creates a symlink `<absmodel>/_build/default/lib/absmodel/priv` -> `../../../../priv`.
++// On macOS this confuses Gradle's processResources / jar tasks, which refuse
++// to follow the symlink across the source/build boundary and abort with
++// "Couldn't follow symbolic link". Replace it with a real copy so downstream
++// tasks (jar, shadowJar) can package the priv contents.
++task fixErlangPrivSymlink(dependsOn: compileErlangBackend) {
++    description = 'Replaces the rebar3-created priv symlink with a real directory (macOS / Gradle workaround).'
++    doLast {
++        def symlink = file('build/resources/main/erlang/absmodel/_build/default/lib/absmodel/priv')
++        def target  = file('build/resources/main/erlang/absmodel/priv')
++        if (java.nio.file.Files.isSymbolicLink(symlink.toPath())) {
++            symlink.delete()
++            if (target.isDirectory()) {
++                ant.copy(todir: symlink.getAbsolutePath()) { fileset(dir: target.getAbsolutePath()) }
++            } else {
++                symlink.mkdirs()
++            }
++        }
++    }
++}
++
+ clean {
+     // This removes beam files left over after updating from old versions
+     // (e.g. v1.8.1), when we precompiled the erlang backend in `src/` instead
+@@ -176,8 +210,12 @@ clean {
+         include '**/*.so'
+     }
+ }
+-// jar.dependsOn 'compileErlangBackend'
+-// processTestResources.dependsOn 'compileErlangBackend'
++
++// Bundle the compiled Erlang runtime (.beam files) into the jars so absc
++// works out of the box, without requiring users to run rebar3 themselves.
++jar.dependsOn 'fixErlangPrivSymlink'
++shadowJar.dependsOn 'fixErlangPrivSymlink'
++processTestResources.dependsOn 'fixErlangPrivSymlink'
+ task copyErlangHtmlFiles(type: Copy) {
+     description = 'Copies the Model API default html file into the erlang build location.'
+     group = 'build'
+diff --git a/frontend/src/main/resources/erlang/absmodel/src/dpor.erl b/frontend/src/main/resources/erlang/absmodel/src/dpor.erl
+index 5f10f0b..47f022f 100644
+--- a/frontend/src/main/resources/erlang/absmodel/src/dpor.erl
++++ b/frontend/src/main/resources/erlang/absmodel/src/dpor.erl
+@@ -341,12 +341,20 @@ add_new_traces_to_db(Trace, Explored, NewTraces) ->
+ %% Simulation
+ 
+ start_simulation(Module, Clocklimit, Id, Trace) ->
+-    {ok, Node} = slave:start_link(localhost, Id, ?CMD_ARGS),
++    %% Migrated from `slave` (deprecated, removal scheduled for OTP 31)
++    %% to `peer`. The peer:start_link/1 map form is the recommended API
++    %% per https://www.erlang.org/doc/man/peer.html.
++    %% Args is a list of strings since OTP 25; ?CMD_ARGS is a single
++    %% string of space-separated flags so we split it.
++    Args = string:tokens(?CMD_ARGS, " "),
++    {ok, Peer, Node} = peer:start_link(#{host => localhost,
++                                          name => Id,
++                                          args => Args}),
+     {ExploredTrace, NewTraces} = rpc:call(Node, runtime, run_dpor_slave,
+                                           [Module, Clocklimit, Trace]),
+     completed_simulation(Trace, ExploredTrace, NewTraces),
+     %% Do DPOR and update DB
+-    slave:stop(Node).
++    peer:stop(Peer).
+ 
+ %% gen_statem interface
+ 
+-- 
+2.50.1 (Apple Git-155)
+

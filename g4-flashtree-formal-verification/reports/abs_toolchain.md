@@ -68,6 +68,11 @@ We also migrated `frontend/src/main/resources/erlang/absmodel/src/dpor.erl`
 from the deprecated `slave` module (scheduled for removal in OTP 31) to
 the supported `peer` API, so the build runs cleanly on Erlang/OTP 28.
 
+The patch is checked in at
+[`../patches/0001-fix-frontend-erlang-bundle-absmodel-.beam-files-in-j.patch`](../patches/);
+see [`../patches/README.md`](../patches/README.md) for `git am`
+instructions.
+
 With those patches in place, the build is a single command from a clean
 checkout:
 
