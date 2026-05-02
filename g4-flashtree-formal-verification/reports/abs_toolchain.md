@@ -39,34 +39,48 @@ This produces `frontend/bin/absc` and `frontend/dist/absfrontend.jar`.
 
 ### 3. Build the Erlang runtime support and bundle into the jar
 
-The `master` branch ships **without** the precompiled Erlang `.beam`
-files for the runtime support library (`absmodel`). On a fresh checkout
-the jar contains the `.erl` sources but not their compiled `.beam`s, and
-`absc -e` fails with `Could not locate Runtime file:.../<module>.beam`.
+Upstream `master` (commit before this work) shipped **without** the
+precompiled Erlang `.beam` files for the runtime support library
+(`absmodel`), and the Gradle build silently produced jars with no
+absmodel `.beam`s for two compounding reasons:
 
-Three steps fix this on macOS / Apple Silicon:
+1. **macOS symlink incompatibility.** rebar3 creates a `priv` symlink
+   inside `_build/`; Gradle's `processResources` task on macOS refuses
+   to follow it across the source/build boundary and aborts.
+2. **rebar3 issue [#379](https://github.com/abstools/abstools/issues/379).**
+   On a fresh checkout, the *first* `rebar3 compile` invocation fetches
+   deps and exits 1 *before* compiling absmodel itself. The Gradle task
+   set `ignoreExitValue = true` and gave up at that point, so the deps'
+   `.beam` files (cowboy, jsx, etc.) were bundled into the jar but
+   absmodel's own — including `dpor.beam` — were not.
+
+We patched `frontend/build.gradle` to fix both:
+
+- Added a `fixErlangPrivSymlink` task that replaces the rebar3 symlink
+  with a real directory before downstream tasks read it.
+- Split `compileErlangBackend` into two passes (`fetchErlangDeps`
+  ignores exit on the first, `compileErlangBackend` requires exit 0 on
+  the second). This guarantees absmodel actually compiles.
+- Wired `jar`, `shadowJar`, and `processTestResources` to depend on
+  `fixErlangPrivSymlink` so the `.beam` files land in the jar.
+
+We also migrated `frontend/src/main/resources/erlang/absmodel/src/dpor.erl`
+from the deprecated `slave` module (scheduled for removal in OTP 31) to
+the supported `peer` API, so the build runs cleanly on Erlang/OTP 28.
+
+With those patches in place, the build is a single command from a clean
+checkout:
 
 ```bash
-# (a) compile the runtime via rebar3
-cd /path/to/abstools/frontend/build/resources/main/erlang/absmodel
-rebar3 compile
-
-# (b) replace the rebar-created `priv` symlink with a real directory
-#     (Gradle's processResources cannot follow symbolic links across
-#     the build/source tree boundary on macOS)
-PRIV=/path/to/abstools/frontend/src/main/resources/erlang/absmodel/_build/default/lib/absmodel/priv
-rm "$PRIV"
-mkdir -p "$PRIV"
-
-# (c) rebuild the shadow jar so the freshly-built .beam files land in
-#     the absc executable's classpath, then promote it to dist/
 cd /path/to/abstools
-./gradlew :frontend:shadowJar
-cp frontend/build/libs/frontend-*-all.jar frontend/dist/absfrontend.jar
+make clean
+rm -rf frontend/build frontend/dist
+make frontend     # ~37s on M3 Ultra
 ```
 
-After these three steps, `absc -e -d /tmp/foo bar.abs` succeeds and the
-emitted `/tmp/foo/run` script executes the model.
+The resulting `frontend/dist/absfrontend.jar` contains 26 absmodel
+`.beam` files (verified via `unzip -l`), and `absc -e -d /tmp/foo bar.abs`
+succeeds out of the box.
 
 ### 4. Verify install
 
