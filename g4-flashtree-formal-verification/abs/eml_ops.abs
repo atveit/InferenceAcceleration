@@ -22,7 +22,7 @@ module EML;
 // arithmetic above is by-inspection algebra:
 //   StandardSoftmax: log(0.4) - log(0.6) = -0.4055
 //   EMLMinPlus:      -0.916  - (-0.510) = -0.4060
-//   |delta| = 5.0e-4 < 1.0e-3.
+//   |diff| = 5.0e-4 < 1.0e-3.
 
 interface Monitor {
     Unit logResult(String name, Float result, Int cycles);
@@ -91,14 +91,14 @@ class EMLActor(Monitor m) implements EMLCompute {
     // demo; the assert is the parity claim.
     Float sm  = log(p) - log(q);
     Float eml = lp - lq;
-    Float delta = sm - eml;
-    if (delta < 0.0) { delta = 0.0 - delta; }
+    Float diff = sm - eml;
+    if (diff < 0.0) { diff = 0.0 - diff; }
     println("Parity check: sm=" + toString(sm) + ", eml=" + toString(eml)
-            + ", |delta|=" + toString(delta));
+            + ", |diff|=" + toString(diff));
 
     // Property: the two computations agree to within 0.001 on this
     // numeric pair. Tolerance accounts for the 3-decimal log inputs.
-    assert delta < 0.001;
+    assert diff < 0.001;
 
     println("Behavioral-model demo complete. The assert constrains"
           + " parity on ONE pair, not for all (p,q).");

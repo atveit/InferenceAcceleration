@@ -1,140 +1,159 @@
-# ABS Toolchain Status (Track A, 2026-05-01)
+# ABS Toolchain Status (updated 2026-05-02)
 
-This file is the install-attempt evidence for the ABS toolchain. **No
-ABS spec in this project has been simulated through `absc`** — the
-toolchain is not available in the environment. All `.abs` files in this
-remediation are reviewed by inspection only. Any "behavioral model"
-claim in the headers is a static-text claim, not a captured run.
+> **Status as of 2026-05-02:** `absc` is **installed and working** on this
+> machine, built from the `abstools/abstools` `master` branch on
+> Apple Silicon. All three `.abs` files in [`../abs/`](../abs/) compile
+> through the Erlang backend, run via `rebar3`, and produce captured
+> stdout logs at [`../abs_runs/`](../abs_runs/) with their assertions
+> passing. The earlier "not installed; inspection only" status (preserved
+> for context at the bottom of this file) no longer applies.
 
-## Summary verdict
+## How the toolchain was put together
 
-`absc` is **NOT INSTALLED** on this machine and was not installable in
-this session via the channels attempted. ABS files are illustrative
-source artifacts only. No `theory/reports/abs_runs/<file>.log` exists
-because no run was performed.
+### 1. Prerequisites (Homebrew)
 
-## What was tried
+```bash
+brew install openjdk      # 25.0.2 — Gradle toolchain wants Java 25
+brew install erlang       # 28.x — runtime for the Erlang backend
+brew install rebar3       # 3.27 — drives the per-model Erlang build
+```
 
-### 1. Direct binary search
+The Gradle build of `abstools/abstools` `master` requires Java 25; the
+older Homebrew `openjdk@21` works for TLC but not for Gradle here. Set
+`JAVA_HOME=/opt/homebrew/opt/openjdk` (i.e. the unversioned formula) and
+prepend its `bin/` to `PATH` before invoking `make`.
+
+### 2. Source build of `absc`
+
+```bash
+git clone --depth=1 https://github.com/abstools/abstools.git
+cd abstools
+
+export JAVA_HOME=/opt/homebrew/opt/openjdk
+export PATH="$JAVA_HOME/bin:$PATH"
+
+make frontend       # ~30s with hot Gradle daemon; ~3 min cold
+```
+
+This produces `frontend/bin/absc` and `frontend/dist/absfrontend.jar`.
+
+### 3. Build the Erlang runtime support and bundle into the jar
+
+The `master` branch ships **without** the precompiled Erlang `.beam`
+files for the runtime support library (`absmodel`). On a fresh checkout
+the jar contains the `.erl` sources but not their compiled `.beam`s, and
+`absc -e` fails with `Could not locate Runtime file:.../<module>.beam`.
+
+Three steps fix this on macOS / Apple Silicon:
+
+```bash
+# (a) compile the runtime via rebar3
+cd /path/to/abstools/frontend/build/resources/main/erlang/absmodel
+rebar3 compile
+
+# (b) replace the rebar-created `priv` symlink with a real directory
+#     (Gradle's processResources cannot follow symbolic links across
+#     the build/source tree boundary on macOS)
+PRIV=/path/to/abstools/frontend/src/main/resources/erlang/absmodel/_build/default/lib/absmodel/priv
+rm "$PRIV"
+mkdir -p "$PRIV"
+
+# (c) rebuild the shadow jar so the freshly-built .beam files land in
+#     the absc executable's classpath, then promote it to dist/
+cd /path/to/abstools
+./gradlew :frontend:shadowJar
+cp frontend/build/libs/frontend-*-all.jar frontend/dist/absfrontend.jar
+```
+
+After these three steps, `absc -e -d /tmp/foo bar.abs` succeeds and the
+emitted `/tmp/foo/run` script executes the model.
+
+### 4. Verify install
 
 ```bash
 $ which absc
-absc not found
-$ which abs
-abs not found
+/path/to/abstools/frontend/bin/absc
+
+$ absc --version
+ABS Tool Suite version unknown
+Built from git tree unknown-not_compiled_in_git_repo-unknown
 ```
 
-No ABS compiler in `PATH`.
+(The `unknown` strings are because the build was not from a tagged
+release; functionality is unaffected.)
 
-### 2. Homebrew (`brew search abs`)
+## How the captured runs were produced
 
 ```bash
-$ brew search abs
-==> Formulae
-abseil  git-absorb  goolabs  ssllabs-scan  qbs
-==> Casks
-abstract  cloudytabs  obs  pushplaylabs-sidekick  silicon-labs-vcp-driver
-sql-tabs  streamlabs
+cd /path/to/InferenceAcceleration/g4-flashtree-formal-verification
+
+for name in eml_ops tree_perf slc_tiling; do
+    rm -rf /tmp/abs_$name
+    absc -e -d /tmp/abs_$name abs/$name.abs
+    /tmp/abs_$name/run > abs_runs/$name.log 2>&1
+done
 ```
 
-None of these is the ABS compiler from
-[abstools/abstools](https://github.com/abstools/abstools). The
-`abs-models` formula does not exist on the default Homebrew taps and no
-`abstools/abs` tap is published as of this session.
+All three exit cleanly. Their assertions pass. See
+[`../abs_runs/README.md`](../abs_runs/README.md) for the per-file
+headline-assertion table.
 
-### 3. Erlang backend prerequisite
+## What this changes vs. the audit-pass
 
-```bash
-$ which erl
-/opt/homebrew/bin/erl
-```
+The Track-A audit verdict for the `.abs` files was *behavioral model
+written but never executed*. With `absc` installed and run logs
+captured:
 
-The ABS Erlang backend prerequisite (`erl`) is present, but without
-`absc` the source-to-Erlang compilation step has no front end.
+- The `assert` lines in each file are now dynamically checked, not just
+  text in the source. Failure would crash the Erlang VM with a stack
+  trace — so a green log is real evidence.
+- The Tier-3 framing in the [companion blog
+  post](https://amund.blog/g4-flashtree-formal-verification/) is
+  promoted from "assertions hold by inspection only" to "assertions hold
+  on this scenario, by execution; logs in `abs_runs/`".
+- Tier-3 is still Tier-3. ABS simulation runs **one** schedule, not the
+  full state space. It is strictly weaker than a TLA+ bounded
+  model-check (Tier 2) and a Lean theorem (Tier 1). The blog's "what
+  formal methods can't prove" section still applies.
 
-### 4. Java prerequisite (for legacy Java backend)
+## Notes specific to Apple Silicon (macOS, M3 Ultra here)
 
-```bash
-$ /opt/homebrew/opt/openjdk@21/bin/java -version
-openjdk version "21.0.10" 2026-01-20
-OpenJDK Runtime Environment Homebrew (build 21.0.10)
-```
+The `master` branch's Gradle build assumes Java 25 toolchain
+auto-detection. The Homebrew unversioned `openjdk` formula provides
+exactly that; the older `openjdk@21` formula does not. If you have only
+the `@21` formula, the build fails at `Cannot find a Java installation
+... matching: {languageVersion=25}`. Either install the unversioned
+`openjdk` or edit `frontend/build.gradle` line 27 to drop the
+`JavaLanguageVersion.of(25)` toolchain pin (substitute 21).
 
-Java 21 is available (Homebrew), but again that is a backend
-prerequisite, not the front end.
+The symlink fix in step 3(b) is also Apple-Silicon / macOS-specific —
+on Linux the symlink works, but on macOS Gradle's
+`processResources` task refuses to follow it.
 
-### 5. Docker image (`abslang/absc`)
+---
 
-The `abslang/absc` Docker image was the most plausible install-free
-path. In this session, `docker pull abslang/absc:latest` and
-`docker images` commands hung against the Docker Desktop endpoint and
-did not return evidence of a successful pull within timeout. I am
-treating "Docker route" as **inconclusive** rather than verified — I
-did not capture a run log proving an image is present and runnable.
+## Original "not installed" status (preserved for context — superseded)
 
-### 6. Source build (`abstools/abstools` from GitHub)
+> The text below is the Track-A audit-pass record from 2026-05-01. It
+> documents the state at the time the original audit ran. It is kept
+> here so the audit trail is reproducible from `git show` of an earlier
+> revision. The current state is "installed" (above).
 
-Not attempted in this session. The repo's build chain (Java + Sbt +
-Stack/Haskell) is sizeable and outside the scope of this remediation,
-which is about *honesty*, not about standing up new toolchains.
+The previous file recorded:
 
-## Decision
+- `which absc` → not found.
+- Homebrew formulae searched: `abseil`, `git-absorb`, `goolabs`,
+  `ssllabs-scan`, `qbs`. None is `absc`.
+- Erlang `erl` was present at `/opt/homebrew/bin/erl`.
+- Java 21 was present via `openjdk@21` (worked for TLC; not
+  sufficient for the `abstools/abstools` Gradle build).
+- The `abslang/absc` Docker image pull was inconclusive in that
+  session; Docker Desktop endpoint was unresponsive.
+- Source build was deferred as out-of-scope at that time.
 
-**Track A proceeds without `absc`.** Per `REMEDIATION_PLAN.md` Standing
-Rule 1 and Standing Rule 4:
+Decision recorded then: "Track A proceeds without `absc`." All
+`.abs` claims were stamped "static analysis / by inspection" and the
+`abs_runs/` directory was intentionally empty.
 
-> If `absc` is NOT available, write that fact (with the exact
-> `which absc` / install attempts) to `theory/reports/abs_toolchain.md`.
-> Do not pretend to have run anything.
-
-> No "this would print SUCCESS" without actually running it. If you
-> change arithmetic, you can compute the new sum by hand and document
-> it — that's not fabrication, that's algebra.
-
-So:
-
-- All claims about what an `.abs` file would print are computed by
-  inspection of the source and labelled "static analysis" / "by
-  inspection", never "ran and observed".
-- The directory `theory/reports/abs_runs/` is intentionally empty for
-  this track. If someone later installs `absc`, runs are to be captured
-  there following the canonical pattern below.
-
-## Canonical run pattern (for future use)
-
-If `absc` becomes available:
-
-```bash
-cd /Users/amund/research/gemma4dflashpapertheory
-absc --erlang theory/phase1_foundations/run/eml_ops.abs -o /tmp/abs_eml/
-cd /tmp/abs_eml
-gen/erl/run \
-  2>&1 | tee /Users/amund/research/gemma4dflashpapertheory/theory/reports/abs_runs/eml_ops.log
-```
-
-(The exact flag is `--erlang` for the Erlang backend; the canonical
-ABS docs at https://abs-models.org/ describe the harness binary at
-`gen/erl/run`. This is *prescriptive*, not run.)
-
-## What "checked" would mean here, if it were checked
-
-A green ABS run is **simulation** of an executable model:
-
-- It produces a trace of `println` outputs and (with `assert`s) either
-  a clean exit or an `assertion failure`.
-- It does **not** explore all reachable states — ABS simulation runs
-  one execution of the actor schedule, not the full state space.
-- It is therefore strictly weaker than a TLA+ TLC run, which is
-  bounded model checking, which is strictly weaker than a Lean proof.
-
-So even with a captured run log, claims of "verified" remain
-overreach. The honest verb is "demonstrated for one schedule" or
-"illustrated".
-
-## Why these pins (would-be)
-
-- `absc` from `abstools/abstools`: the only mainline, maintained ABS
-  front end that targets both Erlang and Maude. Other forks
-  (`abs-models/abstools`) are mirrors.
-- Erlang backend over Maude: Erlang executes; Maude rewrites. For
-  trace-style demos like ours, Erlang is the right target.
+That decision was reversed in the 2026-05-02 follow-up after a
+working source build proved feasible.

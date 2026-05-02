@@ -143,9 +143,12 @@ class SLCManager(Int maxCapacity) implements ISLCManager {
                             // Cannot satisfy the pin: this is a modeling
                             // error (pinned working set > capacity).
                             // The assert at the call site will catch it.
-                            occupancy = maxCapacity + 1; // force assert fail
+                            // Modeling-error path: pinned working set exceeds
+                            // capacity. Halt so the upstream invariant
+                            // (occupancy <= maxCapacity) cannot be silently
+                            // violated by the loop continuing.
                             println("ERROR: pinned set exceeds capacity");
-                            return;
+                            assert False;
                         }
                         this.evictOne();
                     }
@@ -159,9 +162,11 @@ class SLCManager(Int maxCapacity) implements ISLCManager {
                         if (lruResources == Nil) {
                             // No more evictable entries; tile cannot fit
                             // alongside pinned set.
-                            occupancy = maxCapacity + 1; // force assert fail
+                            // Modeling-error path: LRU tile cannot fit even
+                            // after evicting everything. Halt — see comment
+                            // above on the analogous pinned branch.
                             println("ERROR: tile cannot fit alongside pinned set");
-                            return;
+                            assert False;
                         }
                         this.evictOne();
                     }
@@ -198,22 +203,30 @@ class SLCManager(Int maxCapacity) implements ISLCManager {
             + toString((slcSize - lutSize) / tileSize) + " tiles");
 
     slc.access("DeQuant_LUT", lutSize, True);
-    assert slc.getOccupancy() <= slc.getMaxCapacity();
+    Int occ = slc.getOccupancy();
+    Int cap = slc.getMaxCapacity();
+    assert occ <= cap;
 
     Int i = 0;
     while (i < numTiles) {
         slc.access("KV_Tile_" + toString(i), tileSize, False);
-        assert slc.getOccupancy() <= slc.getMaxCapacity();
+        occ = slc.getOccupancy();
+        cap = slc.getMaxCapacity();
+        assert occ <= cap;
         i = i + 1;
     }
 
     println("Re-accessing KV_Tile_0 (expected MISS, evicted earlier)...");
     slc.access("KV_Tile_0", tileSize, False);
-    assert slc.getOccupancy() <= slc.getMaxCapacity();
+    occ = slc.getOccupancy();
+    cap = slc.getMaxCapacity();
+    assert occ <= cap;
 
     println("Re-accessing KV_Tile_11 (expected HIT, was MRU)...");
     slc.access("KV_Tile_11", tileSize, False);
-    assert slc.getOccupancy() <= slc.getMaxCapacity();
+    occ = slc.getOccupancy();
+    cap = slc.getMaxCapacity();
+    assert occ <= cap;
 
     Int finalOccupancy = slc.getOccupancy();
     println("Final SLC Occupancy: " + toString(finalOccupancy) + "MB / " + toString(slcSize) + "MB");

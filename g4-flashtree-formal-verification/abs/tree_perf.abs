@@ -80,10 +80,10 @@ class TreeOptimizer(PerformanceMonitor m) implements Optimizer {
 
 {
     PerformanceMonitor m = new Monitor();
-    Optimizer opt = new TreeOptimizer(m);
+    Optimizer tuner = new TreeOptimizer(m);
 
     println("Starting DDTree Budget behavioral-model sweep...");
-    Fut<Int> f = opt!sweep();
+    Fut<Int> f = tuner!sweep();
     Int optimalB = f.get;
     println("Argmax throughput on the analytic grid: B = " + toString(optimalB));
 
