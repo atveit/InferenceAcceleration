@@ -1,0 +1,223 @@
+module SLCTiling;
+
+// Phase 3.1 Crawl: SLC Tiling, behavioral model.
+// Illustrates "resident set <= 96 MB under cyclic / streaming KV-tile
+// access with a pinned dequant LUT and LRU eviction over the
+// remaining 80 MB tile budget". This is a *behavioral model* of one
+// idealized scheduling policy on one synthetic access trace; it is
+// NOT a hardware model of the M3 Ultra SLC (which is a
+// hardware-managed, set-associative LLC, not strictly LRU at block
+// granularity), and it is NOT a measurement of real residency under
+// Gemma 4 inference.
+//
+// Why the redesign: the prior version of this file loaded
+//     16 (LUT) + 12 * 8 (tiles) = 112 MB
+// into a 96 MB cache with NO eviction policy, and then printed
+// "SUCCESS: Simulation stayed within SLC bounds" only by inspection
+// of the sum -- which is wrong. The audit caught this directly
+// (`audit_tla_abs.md` §3.3). The arithmetic is fixed here: the LUT is
+// pinned (16 MB), the LRU tile budget is 80 MB / 8 MB = 10 tiles, and
+// 12 tiles plus a re-access stream the cache through tile evictions.
+//
+// What the assertion `occupancy <= maxCapacity` constrains: at every
+// point in this single trace, the resident set never exceeds 96 MB.
+// That is the only property the file checks. It says nothing about
+// other access patterns, set associativity, prefetching, or actual
+// SLC behavior on M3.
+//
+// This file has not been simulated through `absc` -- the toolchain is
+// not installed; see `theory/reports/abs_toolchain.md`. The
+// arithmetic above is by-inspection algebra, not a captured run.
+
+interface ISLCManager {
+    Unit access(String resource, Int size, Bool pinned);
+    Int getOccupancy();
+    Int getMaxCapacity();
+}
+
+class SLCManager(Int maxCapacity) implements ISLCManager {
+    Int occupancy = 0;
+    // resident lists are kept newest-first; tail of `lruResources` is
+    // the LRU candidate. `pinnedResources` are never evicted.
+    List<String> pinnedResources = Nil;
+    List<Int>    pinnedSizes     = Nil;
+    List<String> lruResources    = Nil;
+    List<Int>    lruSizes        = Nil;
+
+    Bool contains(List<String> xs, String r) {
+        Bool found = False;
+        List<String> t = xs;
+        while (t != Nil) {
+            if (head(t) == r) { found = True; }
+            t = tail(t);
+        }
+        return found;
+    }
+
+    // Remove the LRU (last) entry from the LRU lists. Decrements
+    // `occupancy` by the evicted size. No-op if list is empty.
+    Unit evictOne() {
+        if (lruResources != Nil) {
+            // Walk to the last element by rebuilding into "all but last".
+            List<String> newRes  = Nil;
+            List<Int>    newSize = Nil;
+            List<String> tR = lruResources;
+            List<Int>    tS = lruSizes;
+            String evictedName = "";
+            Int    evictedSize = 0;
+            while (tR != Nil) {
+                if (tail(tR) == Nil) {
+                    evictedName = head(tR);
+                    evictedSize = head(tS);
+                } else {
+                    newRes  = Cons(head(tR), newRes);
+                    newSize = Cons(head(tS), newSize);
+                }
+                tR = tail(tR);
+                tS = tail(tS);
+            }
+            // newRes was built reverse-of-input-minus-last; reverse to
+            // restore newest-first ordering.
+            List<String> finRes  = Nil;
+            List<Int>    finSize = Nil;
+            List<String> uR = newRes;
+            List<Int>    uS = newSize;
+            while (uR != Nil) {
+                finRes  = Cons(head(uR), finRes);
+                finSize = Cons(head(uS), finSize);
+                uR = tail(uR);
+                uS = tail(uS);
+            }
+            lruResources = finRes;
+            lruSizes     = finSize;
+            occupancy    = occupancy - evictedSize;
+            println("EVICT (LRU): " + evictedName + " (" + toString(evictedSize) + "MB freed)");
+        }
+    }
+
+    Unit access(String resource, Int size, Bool pinned) {
+        Bool inPinned = this.contains(pinnedResources, resource);
+        Bool inLru    = this.contains(lruResources,    resource);
+
+        if (inPinned) {
+            println("HIT (pinned): " + resource);
+        } else {
+            if (inLru) {
+                // Move to MRU position by removing then re-inserting at head.
+                // (Simple impl: rebuild lruResources without the entry, then cons.)
+                List<String> newRes  = Nil;
+                List<Int>    newSize = Nil;
+                List<String> tR = lruResources;
+                List<Int>    tS = lruSizes;
+                Int kept = 0;
+                while (tR != Nil) {
+                    if (head(tR) == resource) {
+                        kept = head(tS);
+                    } else {
+                        newRes  = Cons(head(tR), newRes);
+                        newSize = Cons(head(tS), newSize);
+                    }
+                    tR = tail(tR);
+                    tS = tail(tS);
+                }
+                // reverse newRes/newSize, then cons resource on front
+                List<String> finRes  = Nil;
+                List<Int>    finSize = Nil;
+                List<String> uR = newRes;
+                List<Int>    uS = newSize;
+                while (uR != Nil) {
+                    finRes  = Cons(head(uR), finRes);
+                    finSize = Cons(head(uS), finSize);
+                    uR = tail(uR);
+                    uS = tail(uS);
+                }
+                lruResources = Cons(resource, finRes);
+                lruSizes     = Cons(kept,     finSize);
+                println("HIT (LRU promoted): " + resource);
+            } else {
+                println("MISS: " + resource + " (Loading " + toString(size) + "MB)");
+                if (pinned) {
+                    // Evict from LRU until pin fits.
+                    while (occupancy + size > maxCapacity) {
+                        if (lruResources == Nil) {
+                            // Cannot satisfy the pin: this is a modeling
+                            // error (pinned working set > capacity).
+                            // The assert at the call site will catch it.
+                            occupancy = maxCapacity + 1; // force assert fail
+                            println("ERROR: pinned set exceeds capacity");
+                            return;
+                        }
+                        this.evictOne();
+                    }
+                    pinnedResources = Cons(resource, pinnedResources);
+                    pinnedSizes     = Cons(size,     pinnedSizes);
+                    occupancy = occupancy + size;
+                    println("LOAD (pinned): " + resource + " | occupancy " + toString(occupancy) + "MB / " + toString(maxCapacity) + "MB");
+                } else {
+                    // LRU tile insertion: evict LRU entries until it fits.
+                    while (occupancy + size > maxCapacity) {
+                        if (lruResources == Nil) {
+                            // No more evictable entries; tile cannot fit
+                            // alongside pinned set.
+                            occupancy = maxCapacity + 1; // force assert fail
+                            println("ERROR: tile cannot fit alongside pinned set");
+                            return;
+                        }
+                        this.evictOne();
+                    }
+                    lruResources = Cons(resource, lruResources);
+                    lruSizes     = Cons(size,     lruSizes);
+                    occupancy = occupancy + size;
+                    println("LOAD (LRU): " + resource + " | occupancy " + toString(occupancy) + "MB / " + toString(maxCapacity) + "MB");
+                }
+            }
+        }
+    }
+
+    Int getOccupancy()   { return occupancy; }
+    Int getMaxCapacity() { return maxCapacity; }
+}
+
+{
+    Int slcSize  = 96;   // M3 Ultra SLC capacity, MB. Reference:
+                         // root CLAUDE.md §6.3, Gemma4_SLC_Optimizations.md.
+    Int tileSize = 8;    // KV tile block size, MB. Synthetic; chosen to make
+                         // eviction visible. Real Gemma 4 1024-token working
+                         // set is ~24 MB total, not 8 MB per tile.
+    Int lutSize  = 16;   // FP4->FP16 dequant LUT, MB. Pinned in SLC.
+    Int numTiles = 12;   // Stream more tiles than the 80 MB / 8 MB = 10-tile
+                         // budget so eviction actually happens.
+
+    ISLCManager slc = new SLCManager(slcSize);
+
+    println("--- SLC Tiling Behavioral Model (LRU + pinned LUT) ---");
+    println("SLC Size:  " + toString(slcSize)  + "MB");
+    println("LUT Size:  " + toString(lutSize)  + "MB (pinned)");
+    println("Tile Size: " + toString(tileSize) + "MB (LRU)");
+    println("Tile budget: " + toString(slcSize - lutSize) + "MB / " + toString(tileSize) + "MB = "
+            + toString((slcSize - lutSize) / tileSize) + " tiles");
+
+    slc.access("DeQuant_LUT", lutSize, True);
+    assert slc.getOccupancy() <= slc.getMaxCapacity();
+
+    Int i = 0;
+    while (i < numTiles) {
+        slc.access("KV_Tile_" + toString(i), tileSize, False);
+        assert slc.getOccupancy() <= slc.getMaxCapacity();
+        i = i + 1;
+    }
+
+    println("Re-accessing KV_Tile_0 (expected MISS, evicted earlier)...");
+    slc.access("KV_Tile_0", tileSize, False);
+    assert slc.getOccupancy() <= slc.getMaxCapacity();
+
+    println("Re-accessing KV_Tile_11 (expected HIT, was MRU)...");
+    slc.access("KV_Tile_11", tileSize, False);
+    assert slc.getOccupancy() <= slc.getMaxCapacity();
+
+    Int finalOccupancy = slc.getOccupancy();
+    println("Final SLC Occupancy: " + toString(finalOccupancy) + "MB / " + toString(slcSize) + "MB");
+    println("Behavioral-model demo complete. The asserts constrain"
+          + " 'occupancy <= 96' at every access, NOT residency in real"
+          + " hardware. See abs_remediation_notes.md.");
+}

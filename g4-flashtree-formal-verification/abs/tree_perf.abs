@@ -1,0 +1,97 @@
+module TreePerf;
+
+// Phase 2.3 Run: DDTree Budget, behavioral model.
+// Illustrates a closed-form throughput curve
+//     thr(B) = (log B + 1) / (10 + 0.5 B)
+// evaluated at B in {1, 2, 4, 8, 16, 32, 64}. The MAL and latency
+// terms are ANALYTIC GUESSES of the form
+//     MAL(B)     = log B + 1            (logarithmic in tree budget)
+//     latency(B) = 10 + 0.5 * B         (linear in tree budget)
+// They are NOT derived from a measured DDTree implementation. The
+// `// based on empirical logs` comment in earlier revisions was
+// unsupported by any committed log and has been removed. This file is
+// illustrative, not a measurement of real DDTree behavior.
+//
+// What the assertion at the end of `sweep` constrains: on this
+// discrete grid {1,2,4,8,16,32,64} and on this analytic curve, the
+// argmax throughput is at B = 8. If a future edit perturbs the
+// formula's coefficients, the assert fires.
+//
+// By-hand evaluation (3-4 sf):
+//   B=1:  (0.000+1)/10.5 = 0.09524
+//   B=2:  (0.693+1)/11.0 = 0.15392
+//   B=4:  (1.386+1)/12.0 = 0.19886
+//   B=8:  (2.079+1)/14.0 = 0.21996  <- argmax
+//   B=16: (2.773+1)/18.0 = 0.20959
+//   B=32: (3.466+1)/26.0 = 0.17176
+//   B=64: (4.159+1)/42.0 = 0.12283
+//
+// This file has not been simulated through `absc` -- the toolchain is
+// not installed; see `theory/reports/abs_toolchain.md`. The argmax
+// claim above is by-inspection algebra over a closed-form curve.
+//
+// Deferred finding (for Track R): the honest replacement here is to
+// ingest measured throughput-vs-B from `bench_hybrid.py` in the
+// sibling `gemma4joinedwithdflash/` tree and assert against THOSE
+// numbers, not against a hand-fitted curve.
+
+interface PerformanceMonitor {
+    Unit report(Int budget, Float mal, Float latency, Float throughput);
+}
+
+class Monitor implements PerformanceMonitor {
+    Unit report(Int budget, Float mal, Float latency, Float throughput) {
+        println("Budget: " + toString(budget) +
+                " | MAL: " + toString(mal) +
+                " | Latency: " + toString(latency) +
+                " | Throughput: " + toString(throughput));
+    }
+}
+
+interface Optimizer {
+    Int sweep();
+}
+
+class TreeOptimizer(PerformanceMonitor m) implements Optimizer {
+    Int sweep() {
+        Int b = 1;
+        Int optimalB = 0;
+        Float maxThroughput = 0.0;
+        while (b <= 64) {
+            // Closed-form curve. NOT measured.
+            Float mal          = log(float(b)) + 1.0;
+            Float base_latency = 10.0;
+            Float node_latency = 0.5;
+            Float latency      = base_latency + (float(b) * node_latency);
+
+            Float throughput = mal / latency;
+
+            m!report(b, mal, latency, throughput);
+
+            if (throughput > maxThroughput) {
+                maxThroughput = throughput;
+                optimalB      = b;
+            }
+            b = b * 2; // 1, 2, 4, 8, 16, 32, 64
+        }
+        return optimalB;
+    }
+}
+
+{
+    PerformanceMonitor m = new Monitor();
+    Optimizer opt = new TreeOptimizer(m);
+
+    println("Starting DDTree Budget behavioral-model sweep...");
+    Fut<Int> f = opt!sweep();
+    Int optimalB = f.get;
+    println("Argmax throughput on the analytic grid: B = " + toString(optimalB));
+
+    // Property: on this discrete grid and this analytic curve, the
+    // peak is at B = 8. This constrains the *formula*, not any
+    // measured system.
+    assert optimalB == 8;
+
+    println("Behavioral-model demo complete. The assert constrains"
+          + " the closed-form argmax, NOT a measured optimum.");
+}
